@@ -1,10 +1,10 @@
 requests
-openAI
-fastapi
 uvicorn
-scikit-learn
 pandas
 numpy
-mlflow
 dotenv
 schedule
+snowflake-connector-python
+os
+time
+csv
