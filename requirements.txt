@@ -2,9 +2,6 @@ requests
 uvicorn
 pandas
 numpy
-dotenv
+python-dotenv
 schedule
 snowflake-connector-python
-os
-time
-csv

@@ -1,14 +1,16 @@
-import requests 
+import requests
 import os
 import time
 import snowflake.connector
-from snowflake.connector import get_snowflake_connection
+from snowflake_connection import get_snowflake_connection
+from dotenv import load_dotenv
 
 load_dotenv()
 API_KEY = os.getenv("POLYGON_API_KEY")
-url = f'https://api.massive.com/v3/reference/tickers'
+url = f"https://api.massive.com/v3/reference/tickers"
 
-def fetc_all_tickers(api_key, sleep_seconds=2):
+
+def fetch_all_tickers(api_key, sleep_seconds=2):
     params = {
         "market": "stocks",
         "active": "true",
@@ -40,32 +42,56 @@ def fetc_all_tickers(api_key, sleep_seconds=2):
             for item in data["results"]:
                 tickers.append(item["ticker"])
 
-        return sorted(set(tickers))
-    
+    except KeyboardInterrupt:
+        print("process interrupted by user")
+        raise
+
+    return sorted(set(tickers))
+
+
 def insert_to_snowflake(tickers):
     conn = get_snowflake_connection()
     cursor = conn.cursor()
 
     try:
-        insert_query = "INSERT INTO tickers (ticker) VALUES (%s)"
+        cursor.execute("truncate table tickers_direct")
+        insert_query = "INSERT INTO tickers_direct   (ticker) VALUES (%s)"
         data_to_insert = [(ticker,) for ticker in tickers]
         cursor.executemany(insert_query, data_to_insert)
         conn.commit()
 
         print(f"Inserted {len(tickers)} tickers into Snowflake.")
-    
+
     finally:
         cursor.close()
         conn.close()
 
-def run_pipeline():
-    print("starting pipeline...")
-    start_time = time.time()
-    tickers = fetc_all_tickers(API_KEY)
+
+def run_direct_pipeline():
+    result = {}
+
+    total_start = time.time()
+
+    # ===== API Time =======
+    api_start = time.time()
+    tickers = fetch_all_tickers(API_KEY)
+    api_end = time.time()
+
+    # ======= insert time =======
+    insert_start = time.time()
     insert_to_snowflake(tickers)
-    end_time = time.time()
-    print(f"pipeline completed in {end_time - start_time:.2f} seconds")
-          
+    insert_end = time.time()
+
+    total_end = time.time()
+
+    result["rows"] = len(tickers)
+    result["api_time"] = api_end - api_start
+    result["insert_time"] = insert_end - insert_start
+    result["total_time"] = total_end - total_start
+
+    return result
+
+
 if __name__ == "__main__":
-    run_pipeline()
-  
+    result = run_direct_pipeline()
+    print(result)
