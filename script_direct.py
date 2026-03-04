@@ -7,9 +7,41 @@ from dotenv import load_dotenv
 
 load_dotenv()
 API_KEY = os.getenv("POLYGON_API_KEY")
-url = f"https://api.massive.com/v3/reference/tickers"
+BASE_URL = "https://api.massive.com/v3/reference/tickers"
+
+# 🔥 BATAS UNTUK BENCHMARK
+MAX_TICKERS = 200
 
 
+# ===== Safe request dengan retry + timeout =====
+def safe_request(url, params=None, sleep_seconds=60, max_retries=5):
+    retries = 0
+    while retries < max_retries:
+        try:
+            response = requests.get(url, params=params, timeout=30)
+
+            if response.status_code == 429:
+                print(f"Rate limit kena, tidur {sleep_seconds} detik...")
+                time.sleep(sleep_seconds)
+                retries += 1
+                continue
+
+            response.raise_for_status()
+            return response.json()
+
+        except requests.exceptions.Timeout:
+            print("Request timeout, retrying...")
+            retries += 1
+            time.sleep(5)
+
+        except requests.exceptions.RequestException as e:
+            print(f"HTTP error: {e}")
+            raise
+
+    raise Exception("Max retries reached")
+
+
+# ===== Fetch tickers (DIBATASI 200) =====
 def fetch_all_tickers(api_key, sleep_seconds=2):
     params = {
         "market": "stocks",
@@ -19,79 +51,97 @@ def fetch_all_tickers(api_key, sleep_seconds=2):
         "sort": "ticker",
         "apiKey": api_key,
     }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()
 
     tickers = []
-    for item in data["results"]:
+
+    data = safe_request(BASE_URL, params=params)
+
+    for item in data.get("results", []):
         tickers.append(item["ticker"])
 
-    try:
-        while "next_url" in data:
-            time.sleep(sleep_seconds)
-            print("requesting next page", data["next_url"])
-            response = requests.get(data["next_url"], params={"apiKey": api_key})
-            if response.status_code == 429:
-                print("Rate limit kena, tidur 60 detik...")
-                time.sleep(60)
-                continue
-            response.raise_for_status()
-            data = response.json()
+        # 🔥 STOP kalau sudah 200
+        if len(tickers) >= MAX_TICKERS:
+            print(f"Reached MAX_TICKERS ({MAX_TICKERS})")
+            return sorted(set(tickers[:MAX_TICKERS]))
 
-            for item in data["results"]:
+    try:
+        while "next_url" in data and data["next_url"]:
+            time.sleep(sleep_seconds)
+            print("Requesting next page:", data["next_url"])
+
+            data = safe_request(data["next_url"], params={"apiKey": api_key})
+
+            for item in data.get("results", []):
                 tickers.append(item["ticker"])
 
+                # 🔥 STOP kalau sudah 200
+                if len(tickers) >= MAX_TICKERS:
+                    print(f"Reached MAX_TICKERS ({MAX_TICKERS})")
+                    return sorted(set(tickers[:MAX_TICKERS]))
+
     except KeyboardInterrupt:
-        print("process interrupted by user")
+        print("Process interrupted by user")
         raise
 
     return sorted(set(tickers))
 
 
+# ===== Insert ke Snowflake =====
 def insert_to_snowflake(tickers):
     conn = get_snowflake_connection()
     cursor = conn.cursor()
-
     try:
-        cursor.execute("truncate table tickers_direct")
-        insert_query = "INSERT INTO tickers_direct   (ticker) VALUES (%s)"
-        data_to_insert = [(ticker,) for ticker in tickers]
+        cursor.execute("TRUNCATE TABLE tickers_direct")
+        print(f"Inserting {len(tickers)} tickers...")
+
+        insert_query = "INSERT INTO tickers_direct (ticker) VALUES (%s)"
+        data_to_insert = [(t,) for t in tickers]
+
         cursor.executemany(insert_query, data_to_insert)
         conn.commit()
+        print("Insert selesai.")
 
-        print(f"Inserted {len(tickers)} tickers into Snowflake.")
+    except Exception as e:
+        print("Error inserting data:", e)
+        conn.rollback()
+        raise
 
     finally:
         cursor.close()
         conn.close()
 
 
+# ===== Main pipeline =====
 def run_direct_pipeline():
     result = {}
-
     total_start = time.time()
 
-    # ===== API Time =======
-    api_start = time.time()
-    tickers = fetch_all_tickers(API_KEY)
-    api_end = time.time()
+    # ===== API =====
+    try:
+        api_start = time.time()
+        tickers = fetch_all_tickers(API_KEY)
+        api_end = time.time()
+    except Exception as e:
+        print("Error fetching tickers:", e)
+        tickers = []
+        api_end = time.time()
 
-    # ======= insert time =======
-    insert_start = time.time()
-    insert_to_snowflake(tickers)
-    insert_end = time.time()
+    # ===== INSERT =====
+    try:
+        insert_start = time.time()
+        if tickers:
+            insert_to_snowflake(tickers)
+        insert_end = time.time()
+    except Exception as e:
+        print("Error inserting to Snowflake:", e)
+        insert_end = time.time()
 
     total_end = time.time()
 
+    # ===== Return dict =====
     result["rows"] = len(tickers)
-    result["api_time"] = api_end - api_start
-    result["insert_time"] = insert_end - insert_start
-    result["total_time"] = total_end - total_start
+    result["api_time_sec"] = round(api_end - api_start, 2)
+    result["insert_time_sec"] = round(insert_end - insert_start, 2)
+    result["total_time_sec"] = round(total_end - total_start, 2)
 
     return result
-
-
-if __name__ == "__main__":
-    result = run_direct_pipeline()
-    print(result)

@@ -1,0 +1,5 @@
+method,rows,api_time,csv_time,load_time,total_time
+CSV -> Snowflake,200,0,0,0,0
+Direct -> Snowflake,200,0,0,0,0
+CSV -> Snowflake,200,0,0,0,0
+Direct -> Snowflake,200,0,0,0,0

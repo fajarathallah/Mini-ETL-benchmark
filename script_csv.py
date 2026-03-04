@@ -1,17 +1,49 @@
 import requests
-import csv
 import os
 import time
-from dotenv import load_dotenv
+import csv
 import snowflake.connector
 from snowflake_connection import get_snowflake_connection
+from dotenv import load_dotenv
 
 load_dotenv()
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
-url = "https://api.massive.com/v3/reference/tickers"
+API_KEY = os.getenv("POLYGON_API_KEY")
+BASE_URL = "https://api.massive.com/v3/reference/tickers"
+
+# 🔥 BATAS UNTUK BENCHMARK
+MAX_TICKERS = 200
+CSV_FILE = "tickers.csv"
 
 
-# Extract tickers from Polygon API
+# ===== Safe request dengan retry + timeout =====
+def safe_request(url, params=None, sleep_seconds=60, max_retries=5):
+    retries = 0
+    while retries < max_retries:
+        try:
+            response = requests.get(url, params=params, timeout=30)
+
+            if response.status_code == 429:
+                print(f"Rate limit kena, tidur {sleep_seconds} detik...")
+                time.sleep(sleep_seconds)
+                retries += 1
+                continue
+
+            response.raise_for_status()
+            return response.json()
+
+        except requests.exceptions.Timeout:
+            print("Request timeout, retrying...")
+            retries += 1
+            time.sleep(5)
+
+        except requests.exceptions.RequestException as e:
+            print(f"HTTP error: {e}")
+            raise
+
+    raise Exception("Max retries reached")
+
+
+# ===== Fetch tickers (DIBATASI 200) =====
 def fetch_all_tickers(api_key, sleep_seconds=2):
     params = {
         "market": "stocks",
@@ -21,80 +53,60 @@ def fetch_all_tickers(api_key, sleep_seconds=2):
         "sort": "ticker",
         "apiKey": api_key,
     }
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    data = response.json()
 
     tickers = []
-    for item in data["results"]:
-        tickers.append(item["ticker"])
+    url = BASE_URL
 
-    try:
-        while "next_url" in data:
-            time.sleep(sleep_seconds)
-            print("requesting next page", data["next_url"])
-            response = requests.get(data["next_url"], params={"apiKey": api_key})
-            if response.status_code == 429:
-                print("Rate limit kena, tidur 60 detik...")
-                time.sleep(60)
-                continue
-            response.raise_for_status()
-            data = response.json()
+    while url and len(tickers) < MAX_TICKERS:
+        data = safe_request(url, params=params)
 
-            for ticker in data["results"]:
-                tickers.append(ticker["ticker"])
+        for item in data.get("results", []):
+            tickers.append(item["ticker"])
 
-    except KeyboardInterrupt:
-        print("process interrupted by user")
-        raise
-    return tickers
+            if len(tickers) >= MAX_TICKERS:
+                break
+
+        url = data.get("next_url")
+        params = {"apiKey": api_key}
+        time.sleep(sleep_seconds)
+
+    print(f"Total tickers fetched: {len(tickers)}")
+    return sorted(set(tickers))
 
 
-# Load tickers to CSV
-def save_tickers_to_csv(tickers, filename="tickers.csv"):
-    unique_tickers = sorted(
-        set(tickers)
-    )  # Transfrom ke set untuk menghilangkan duplikat, lalu sorted untuk mengurutkan
-    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+# ===== Save ke CSV =====
+def save_to_csv(tickers):
+    with open(CSV_FILE, mode="w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["ticker"])  # header
-        for item in unique_tickers:
-            writer.writerow([item])
+        writer.writerow(["ticker"])
+        for t in tickers:
+            writer.writerow([t])
 
-    print(f"csv berhasil dibuat: {filename}")
-    print(f"jumlah ticker unik: {len(unique_tickers)}")
+    print("CSV berhasil dibuat.")
 
 
-# Load csv to Snowflake
-def load_csv_to_snowflake(filename="tickers.csv"):
+# ===== Insert dari CSV ke Snowflake =====
+def insert_csv_to_snowflake():
     conn = get_snowflake_connection()
-    conn.autocommit(False)
     cursor = conn.cursor()
 
     try:
-        # DEBUG: Cek kamu sedang di database/schema mana
-        cursor.execute(
-            "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE()"
-        )
-        print("🔍 Koneksi ke:", cursor.fetchone())
-        cursor.execute("TRUNCATE TABLE TICKERS_FROM_CSV")
+        cursor.execute("TRUNCATE TABLE tickers_from_csv")
 
-        # Baca CSV
-        with open(filename, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            next(reader)  # skip header
-            data = [(row[0],) for row in reader]  # buat list of tuple
+        insert_query = "INSERT INTO tickers_from_csv (ticker) VALUES (%s)"
 
-        # Insert semua row ke table
-        insert_query = "INSERT INTO TICKERS_FROM_CSV (ticker) VALUES (%s)"
-        cursor.executemany(insert_query, data)
+        with open(CSV_FILE, mode="r") as file:
+            reader = csv.DictReader(file)
+            data_to_insert = [(row["ticker"],) for row in reader]
 
+        print(f"Inserting {len(data_to_insert)} tickers...")
+        cursor.executemany(insert_query, data_to_insert)
         conn.commit()
-        print(f"{len(data)} rows berhasil masuk ke Snowflake (direct insert)")
-        print("CSV path:", os.path.abspath(filename))
+
+        print("Insert selesai.")
 
     except Exception as e:
-        print(f"Error loading CSV to Snowflake: {e}")
+        print("Error inserting CSV data:", e)
         conn.rollback()
         raise
 
@@ -103,37 +115,38 @@ def load_csv_to_snowflake(filename="tickers.csv"):
         conn.close()
 
 
+# ===== Main pipeline =====
 def run_csv_pipeline():
     result = {}
-
     total_start = time.time()
 
-    # API
-    api_start = time.time()
-    tickers = fetch_all_tickers(POLYGON_API_KEY)
-    api_end = time.time()
+    # ===== API =====
+    try:
+        api_start = time.time()
+        tickers = fetch_all_tickers(API_KEY)
+        api_end = time.time()
+    except Exception as e:
+        print("Error fetching tickers:", e)
+        tickers = []
+        api_end = time.time()
 
-    # CSV
+    # ===== SAVE CSV =====
     csv_start = time.time()
-    save_tickers_to_csv(tickers)
+    if tickers:
+        save_to_csv(tickers)
     csv_end = time.time()
 
-    # LOAD
-    load_start = time.time()
-    load_csv_to_snowflake("tickers.csv")
-    load_end = time.time()
+    # ===== INSERT =====
+    insert_start = time.time()
+    if tickers:
+        insert_csv_to_snowflake()
+    insert_end = time.time()
 
     total_end = time.time()
 
-    result["rows"] = len(set(tickers))
-    result["api_time"] = api_end - api_start
-    result["csv_time"] = csv_end - csv_start
-    result["load_time"] = load_end - load_start
-    result["total_time"] = total_end - total_start
+    result["rows"] = len(tickers)
+    result["api_time_sec"] = round(api_end - api_start, 2)
+    result["insert_time_sec"] = round(insert_end - insert_start, 2)
+    result["total_time_sec"] = round(total_end - total_start, 2)
 
     return result
-
-
-if __name__ == "__main__":
-    result = run_csv_pipeline()
-    print(result)
