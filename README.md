@@ -4,10 +4,10 @@ This study conduct to benchmark comparison perfomance and eficiency of each meth
 
 mini-etl-benchmark/
 │
-├─ script_direct.py          # Pipeline langsung ke Snowflake
-├─ script_csv.py             # Pipeline melalui CSV
-├─ benchmark.py              # Benchmark pipeline & simpan hasil metrik
-├─ snowflake_connection.py   # Fungsi koneksi Snowflake
-├─ .env                      # API keys & Snowflake config
-├─ tickers.csv               # Hasil CSV (opsional)
-└─ README.md
+|--- script_direct.py          # Pipeline langsung ke Snowflake
+|--- script_csv.py             # Pipeline melalui CSV
+|--- benchmark.py              # Benchmark pipeline & simpan hasil metrik
+|--- benchmark_visualize.py    # Menampilkan visualisasi                            
+|--- snowflake_connection.py   # Fungsi koneksi Snowflake
+|--- .env.example              # API keys & Snowflake config example
+|--- README.md            
