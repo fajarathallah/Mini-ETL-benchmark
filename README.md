@@ -1,6 +1,13 @@
+
+< div align = "center">
+
 # mini-etl-benchmark
 Benchmark ETL Pipeline. This uses massive.com API to extract data about stocks.
-This study conduct to benchmark comparison perfomance and eficiency of each method which is Direct insert (API -> snowflake) and CSV -> snowflake (API -> CSV -> snowflake)
+This study conduct to benchmark comparison perfomance and eficiency of each method which is:
+1. Direct insert (API -> snowflake)
+2. CSV -> snowflake (API -> CSV -> snowflake)
+
+</div>
 
 mini-etl-benchmark/
 │
