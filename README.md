@@ -81,6 +81,17 @@ python benchmark.py
 - Mengukur performan pipeline
 - Menyimpan metrik total_time, api_time, insert_time, load_time, rows
 
+## 📋: Hasil Analisa
+<div align="center">
+  <img src="result/Benchmark resultss.png" width="500" />
+  <img src="result/benchmark_chart.png" width="500" />
+</div>
+
+Result:
+1. Direct insert more faster, but doesn't have backup
+2. csv -> snowflake more slower, but data will be safe in csv so it is safe for audit or recovery
+
+
 
 
 
